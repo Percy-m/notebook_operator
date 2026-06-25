@@ -1,4 +1,4 @@
-swagger: "2.0"
+swagger: '2.0'
 info:
   description: 作业执行与作业记录管理接口
   version: v1
@@ -23,7 +23,7 @@ paths:
         - com.huawei.aipd.service.bean.ResponseDto
         - org.springframework.web.multipart.MultipartFile
       summary: 创建作业执行记录
-      description: 提交脚本执行作业，异步处理作业投递
+      description: 提交脚本执行作业,异步处理作业投递
       operationId: create
       parameters:
         - name: jobFileList
@@ -36,9 +36,9 @@ paths:
           description: 创建作业请求参数
           x-type: CreateJobRequestVo
           schema:
-            $ref: "#/definitions/CreateJobRequestVo"
+            $ref: '#/definitions/CreateJobRequestVo'
       responses:
-        "200":
+        '200':
           description: 成功响应
           schema:
             type: string
@@ -74,9 +74,9 @@ paths:
           in: query
           required: false
           type: boolean
-          description: 是否从运算资源提供商同步作业信息，提交作业后轮询作业状态时使用
+          description: 是否从运算资源提供商同步作业信息，提交作业后轮训作业状态时使用
       responses:
-        "200":
+        '200':
           description: 成功响应
 
   /job/download:
@@ -111,9 +111,9 @@ paths:
           required: false
           type: string
           maxLength: 64
-          description: 下载文件格式(可选，默认zip)，如zip、tar.gz、txt等
+          description: 下载文件格式(可选,默认zip)，如zip、tar.gz、txt等
       responses:
-        "200":
+        '200':
           description: 下载文件流
           schema:
             type: file
@@ -138,10 +138,10 @@ paths:
           maxLength: 128
           description: 作业ID
       responses:
-        "200":
+        '200':
           description: 成功响应
           schema:
-            $ref: "#/definitions/StopJobResponseVo"
+            $ref: '#/definitions/StopJobResponseVo'
 
   /job/query:
     post:
@@ -174,14 +174,13 @@ paths:
           description: 查询条件
           x-type: QueryJobRequestVo
           schema:
-            $ref: "#/definitions/QueryJobRequestVo"
+            $ref: '#/definitions/QueryJobRequestVo'
       responses:
-        "200":
+        '200':
           description: 成功响应
 
 definitions:
   CreateJobRequestVo:
-    type: object
     description: 创建作业请求VO
     required:
       - jobBizId
@@ -190,7 +189,7 @@ definitions:
       jobName:
         type: string
         maxLength: 256
-        description: 作业名称(可选，默认使用文件名)
+        description: 作业名称(可选,默认使用文件名)
       jobParams:
         type: string
         description: 作业执行参数JSON
@@ -239,7 +238,6 @@ definitions:
         description: 是否交互式，针对Spark SQL类型，默认false
 
   StopJobResponseVo:
-    type: object
     description: 停止作业响应VO
     properties:
       jobId:
@@ -256,7 +254,6 @@ definitions:
         description: 停止执行结果，success表示停止成功，failed表示停止失败
 
   QueryJobRequestVo:
-    type: object
     description: 查询作业请求VO
     properties:
       jobId:
@@ -281,11 +278,11 @@ definitions:
         description: 任务名称(可选，支持多个)
       startTime:
         description: 开始时间(可选)
-        x-annotations: '@JsonFormat(pattern = "yyyy-MM-dd HH:mm")'
+        x-annotations: '@JsonFormat(pattern = "yyy-MM-dd HH:MM")'
         x-type: Date
       endTime:
         description: 结束时间(可选)
-        x-annotations: '@JsonFormat(pattern = "yyyy-MM-dd HH:mm")'
+        x-annotations: '@JsonFormat(pattern = "yyy-MM-dd HH:MM")'
         x-type: Date
       jobStatus:
         type: array
@@ -294,7 +291,6 @@ definitions:
         description: 作业状态(可选)
 
   JobInfoVo:
-    type: object
     description: 作业信息VO
     properties:
       jobId:
@@ -335,19 +331,19 @@ definitions:
         description: 运算资源提供系统对应的作业id
       jobSubmitTime:
         description: 作业投递时间
-        x-annotations: '@JsonFormat(pattern = "yyyy-MM-dd HH:mm")'
+        x-annotations: '@JsonFormat(pattern = "yyy-MM-dd HH:MM")'
         x-type: Date
       jobFinishedTime:
         description: 作业完成的时间
-        x-annotations: '@JsonFormat(pattern = "yyyy-MM-dd HH:mm")'
+        x-annotations: '@JsonFormat(pattern = "yyy-MM-dd HH:MM")'
         x-type: Date
       createTime:
         description: 作业创建时间
-        x-annotations: '@JsonFormat(pattern = "yyyy-MM-dd HH:mm")'
+        x-annotations: '@JsonFormat(pattern = "yyy-MM-dd HH:MM")'
         x-type: Date
       updateTime:
         description: 作业更新时间
-        x-annotations: '@JsonFormat(pattern = "yyyy-MM-dd HH:mm")'
+        x-annotations: '@JsonFormat(pattern = "yyy-MM-dd HH:MM")'
         x-type: Date
       createBy:
         type: string
@@ -378,7 +374,6 @@ definitions:
         description: 是否交互式，针对Spark SQL类型
 
   LogFileVO:
-    type: object
     description: 日志文件VO
     properties:
       logName:
@@ -398,7 +393,6 @@ definitions:
         description: 日志文件路径
 
   JobLogVO:
-    type: object
     description: 作业日志VO
     properties:
       jobId:
@@ -413,5 +407,5 @@ definitions:
       logFiles:
         type: array
         items:
-          $ref: "#/definitions/LogFileVO"
+          $ref: '#/definitions/LogFileVO'
         description: 日志文件列表
