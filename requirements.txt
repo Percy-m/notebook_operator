@@ -1,0 +1,5 @@
+apache-airflow>=3.0,<4.0
+apache-airflow-providers-standard
+ipykernel
+papermill
+requests
