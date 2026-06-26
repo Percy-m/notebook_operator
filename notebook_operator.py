@@ -132,10 +132,63 @@ class NotebookOperator(PythonOperator):
             raise
 
     def get_resource_id(self, project_id: str, headers: dict = None) -> str:
-        resource_id = self.params.get("resource_id")
-        if not resource_id:
-            raise ValueError("resource_id is required before the resource lookup API is implemented")
+        required_resource = self.calculate_task_resource()
+        resource_pools = self.query_resource_pools(project_id, headers=headers)
+        selected_pool = self.select_resource_pool(resource_pools, required_resource)
+        resource_id = selected_pool["poolUid"]
+        self.log.info(
+            f"选择资源池: {resource_id}, "
+            f"required_cpu: {required_resource['cpu']}, "
+            f"required_memory: {required_resource['memory']}"
+        )
         return resource_id
+
+    def calculate_task_resource(self) -> dict:
+        driver_cores = 1
+        driver_memory_overhead = 0
+        num_executors = int(self.params.get("num_executors", 1))
+        executor_cores = int(self.params.get("executor_cores", 1))
+        driver_memory = self.parse_resource_value(self.params.get("driver_memory", 512))
+        executor_memory = self.parse_resource_value(self.params.get("executor_memory", 512))
+        cpu = driver_cores + num_executors * executor_cores
+        memory = driver_memory + driver_memory_overhead + num_executors * executor_memory
+        return {
+            "cpu": cpu,
+            "memory": memory
+        }
+
+    def query_resource_pools(self, project_id: str, headers: dict = None) -> list:
+        url = self.build_resource_pool_query_url()
+        response = self.send_http_get(url, headers=headers)
+        data = json.loads(response.content)
+        if data.get("status") != "OK":
+            raise RuntimeError(f"资源池列表查询失败: {data}")
+        resource_pools = data.get("data") or []
+        if not isinstance(resource_pools, list):
+            raise ValueError(f"资源池列表响应格式错误: {data}")
+        return resource_pools
+
+    def build_resource_pool_query_url(self) -> str:
+        resource_type = self.params.get("resource_type")
+        if not resource_type:
+            raise ValueError("resource_type is required to query resource pools")
+        comp_route_base = self.REMOTE_API_MAP[self.env]["create_spark_job"].rsplit("/job/create", 1)[0]
+        return f"{comp_route_base}/{str(resource_type).strip('/')}/queryAll"
+
+    def select_resource_pool(self, resource_pools: list, required_resource: dict) -> dict:
+        required_cpu = required_resource["cpu"]
+        required_memory = required_resource["memory"]
+        for resource_pool in resource_pools:
+            remaining_cpu = self.parse_resource_value(resource_pool.get("remainingCpuQuota", 0))
+            remaining_memory = self.parse_resource_value(resource_pool.get("remainingMemoryQuota", 0))
+            if remaining_cpu >= required_cpu and remaining_memory >= required_memory:
+                if not resource_pool.get("poolUid"):
+                    raise ValueError(f"资源池缺少poolUid: {resource_pool}")
+                return resource_pool
+        raise RuntimeError(
+            f"没有满足资源需求的资源池，required_cpu: {required_cpu}, "
+            f"required_memory: {required_memory}"
+        )
 
     def build_spark_job_params(self, file_name: str) -> dict:
         return {
@@ -297,6 +350,19 @@ class NotebookOperator(PythonOperator):
         if isinstance(value, str) and value.isdigit():
             return f"{value}m"
         return str(value)
+
+    def parse_resource_value(self, value) -> int:
+        if isinstance(value, int):
+            return value
+        if isinstance(value, float):
+            return int(value)
+        if isinstance(value, str):
+            normalized_value = value.strip().lower()
+            if normalized_value.endswith("m"):
+                normalized_value = normalized_value[:-1]
+            if normalized_value.isdigit():
+                return int(normalized_value)
+        raise ValueError(f"资源数值格式错误: {value}")
 
     def should_submit_spark_job(self) -> bool:
         value = self.params.get("submit_spark_job", False)
