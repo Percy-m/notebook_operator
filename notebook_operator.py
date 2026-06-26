@@ -2,12 +2,53 @@ import json
 import tempfile
 import os
 import time
+from enum import Enum
+
 import papermill as pm
 
 import requests
 
 from airflow.providers.standard.operators.python import PythonOperator
 
+
+class SparkJobStatus(Enum):
+    UNKNOWN = "UNKNOWN"
+    SUBMITTED = "SUBMITTED"
+    WAITING = "WAITING"
+    RUNNING = "RUNNING"
+    FINISHED = "FINISHED"
+    FAILED = "FAILED"
+    KILLED = "KILLED"
+
+    @classmethod
+    def from_value(cls, value):
+        if value is None:
+            return cls.UNKNOWN
+
+        normalized_value = str(value).strip().upper()
+        status_mapping = {
+            "NEW": cls.WAITING,
+            "NEW_SAVING": cls.WAITING,
+            "ACCEPTED": cls.WAITING,
+            "PENDING": cls.WAITING,
+            "WAITING": cls.WAITING,
+            "SUBMITTED": cls.SUBMITTED,
+            "SUBMITTING": cls.SUBMITTED,
+            "RUNNING": cls.RUNNING,
+            "RELAUNCHING": cls.RUNNING,
+            "FINISHED": cls.FINISHED,
+            "SUCCEEDED": cls.FINISHED,
+            "SUCCESS": cls.FINISHED,
+            "COMPLETED": cls.FINISHED,
+            "FAILED": cls.FAILED,
+            "FAIL": cls.FAILED,
+            "ERROR": cls.FAILED,
+            "TIMEOUT": cls.FAILED,
+            "KILLED": cls.KILLED,
+            "CANCELED": cls.KILLED,
+            "CANCELLED": cls.KILLED,
+        }
+        return status_mapping.get(normalized_value, cls.UNKNOWN)
 
 
 class NotebookOperator(PythonOperator):
@@ -271,16 +312,16 @@ class NotebookOperator(PythonOperator):
             self.log.info(f"Spark作业日志响应: {last_job_log}")
 
             job_status = self.extract_job_status(last_base_info)
-            if job_status:
-                normalized_status = str(job_status).lower()
-                if normalized_status in {"success", "succeeded", "finished", "completed"}:
-                    return {
-                        "job_id": job_id,
-                        "job_base_info": last_base_info,
-                        "job_log": last_job_log
-                    }
-                if normalized_status in {"failed", "error", "cancelled", "canceled", "killed", "timeout"}:
-                    raise RuntimeError(f"Spark作业执行失败，job_id: {job_id}, job_status: {job_status}")
+            spark_job_status = SparkJobStatus.from_value(job_status)
+            self.log.info(f"Spark作业状态: {spark_job_status.value}, 原始状态: {job_status}")
+            if spark_job_status == SparkJobStatus.FINISHED:
+                return {
+                    "job_id": job_id,
+                    "job_base_info": last_base_info,
+                    "job_log": last_job_log
+                }
+            if spark_job_status in {SparkJobStatus.FAILED, SparkJobStatus.KILLED}:
+                raise RuntimeError(f"Spark作业执行失败，job_id: {job_id}, job_status: {job_status}")
 
             if time.time() >= deadline:
                 raise TimeoutError(f"Spark作业轮询超时，job_id: {job_id}, timeout: {timeout}")
@@ -365,10 +406,8 @@ class NotebookOperator(PythonOperator):
         raise ValueError(f"资源数值格式错误: {value}")
 
     def should_submit_spark_job(self) -> bool:
-        value = self.params.get("submit_spark_job", False)
-        if isinstance(value, str):
-            return value.lower() == "true"
-        return bool(value)
+        file_type = self.params.get("file_type")
+        return str(file_type).strip().lower() == "spark" if file_type is not None else False
 
     def _execute(self, **context):
         __import__('subprocess').check_call([__import__('sys').executable, '-m', 'pip', 'uninstall', 'hw-aiportal-aipd_dag_operator', '-y'])
