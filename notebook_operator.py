@@ -2,7 +2,6 @@ import json
 import tempfile
 import os
 import time
-from enum import Enum
 
 import papermill as pm
 
@@ -11,47 +10,37 @@ import requests
 from airflow.providers.standard.operators.python import PythonOperator
 
 
-class SparkJobStatus(Enum):
-    UNKNOWN = "UNKNOWN"
-    SUBMITTED = "SUBMITTED"
-    WAITING = "WAITING"
-    RUNNING = "RUNNING"
-    FINISHED = "FINISHED"
-    FAILED = "FAILED"
-    KILLED = "KILLED"
-
-    @classmethod
-    def from_value(cls, value):
-        if value is None:
-            return cls.UNKNOWN
-
-        normalized_value = str(value).strip().upper()
-        status_mapping = {
-            "NEW": cls.WAITING,
-            "NEW_SAVING": cls.WAITING,
-            "ACCEPTED": cls.WAITING,
-            "PENDING": cls.WAITING,
-            "WAITING": cls.WAITING,
-            "SUBMITTED": cls.SUBMITTED,
-            "SUBMITTING": cls.SUBMITTED,
-            "RUNNING": cls.RUNNING,
-            "RELAUNCHING": cls.RUNNING,
-            "FINISHED": cls.FINISHED,
-            "SUCCEEDED": cls.FINISHED,
-            "SUCCESS": cls.FINISHED,
-            "COMPLETED": cls.FINISHED,
-            "FAILED": cls.FAILED,
-            "FAIL": cls.FAILED,
-            "ERROR": cls.FAILED,
-            "TIMEOUT": cls.FAILED,
-            "KILLED": cls.KILLED,
-            "CANCELED": cls.KILLED,
-            "CANCELLED": cls.KILLED,
-        }
-        return status_mapping.get(normalized_value, cls.UNKNOWN)
-
-
 class NotebookOperator(PythonOperator):
+
+    SPARK_JOB_STATUS_UNKNOWN = "UNKNOWN"
+    SPARK_JOB_STATUS_SUBMITTED = "SUBMITTED"
+    SPARK_JOB_STATUS_WAITING = "WAITING"
+    SPARK_JOB_STATUS_RUNNING = "RUNNING"
+    SPARK_JOB_STATUS_FINISHED = "FINISHED"
+    SPARK_JOB_STATUS_FAILED = "FAILED"
+    SPARK_JOB_STATUS_KILLED = "KILLED"
+    SPARK_JOB_STATUS_MAPPING = {
+        "NEW": SPARK_JOB_STATUS_WAITING,
+        "NEW_SAVING": SPARK_JOB_STATUS_WAITING,
+        "ACCEPTED": SPARK_JOB_STATUS_WAITING,
+        "PENDING": SPARK_JOB_STATUS_WAITING,
+        "WAITING": SPARK_JOB_STATUS_WAITING,
+        "SUBMITTED": SPARK_JOB_STATUS_SUBMITTED,
+        "SUBMITTING": SPARK_JOB_STATUS_SUBMITTED,
+        "RUNNING": SPARK_JOB_STATUS_RUNNING,
+        "RELAUNCHING": SPARK_JOB_STATUS_RUNNING,
+        "FINISHED": SPARK_JOB_STATUS_FINISHED,
+        "SUCCEEDED": SPARK_JOB_STATUS_FINISHED,
+        "SUCCESS": SPARK_JOB_STATUS_FINISHED,
+        "COMPLETED": SPARK_JOB_STATUS_FINISHED,
+        "FAILED": SPARK_JOB_STATUS_FAILED,
+        "FAIL": SPARK_JOB_STATUS_FAILED,
+        "ERROR": SPARK_JOB_STATUS_FAILED,
+        "TIMEOUT": SPARK_JOB_STATUS_FAILED,
+        "KILLED": SPARK_JOB_STATUS_KILLED,
+        "CANCELED": SPARK_JOB_STATUS_KILLED,
+        "CANCELLED": SPARK_JOB_STATUS_KILLED,
+    }
 
     # 不同环境下远程接口地址映射
     REMOTE_API_MAP = {
@@ -109,6 +98,14 @@ class NotebookOperator(PythonOperator):
         self.kernel_name = kernel_name
         self.env = os.environ.get("AIPD_REGION", "dev") or "dev"
         self.user_info = {}
+
+    @classmethod
+    def normalize_spark_job_status(cls, value) -> str:
+        if value is None:
+            return cls.SPARK_JOB_STATUS_UNKNOWN
+
+        normalized_value = str(value).strip().upper()
+        return cls.SPARK_JOB_STATUS_MAPPING.get(normalized_value, cls.SPARK_JOB_STATUS_UNKNOWN)
 
     def get_user_info(self, user_id: str, headers: dict = None) -> dict:
         url = self.REMOTE_API_MAP[self.env]["get_user_info"]
@@ -312,15 +309,15 @@ class NotebookOperator(PythonOperator):
             self.log.info(f"Spark作业日志响应: {last_job_log}")
 
             job_status = self.extract_job_status(last_base_info)
-            spark_job_status = SparkJobStatus.from_value(job_status)
-            self.log.info(f"Spark作业状态: {spark_job_status.value}, 原始状态: {job_status}")
-            if spark_job_status == SparkJobStatus.FINISHED:
+            spark_job_status = self.normalize_spark_job_status(job_status)
+            self.log.info(f"Spark作业状态: {spark_job_status}, 原始状态: {job_status}")
+            if spark_job_status == self.SPARK_JOB_STATUS_FINISHED:
                 return {
                     "job_id": job_id,
                     "job_base_info": last_base_info,
                     "job_log": last_job_log
                 }
-            if spark_job_status in {SparkJobStatus.FAILED, SparkJobStatus.KILLED}:
+            if spark_job_status in {self.SPARK_JOB_STATUS_FAILED, self.SPARK_JOB_STATUS_KILLED}:
                 raise RuntimeError(f"Spark作业执行失败，job_id: {job_id}, job_status: {job_status}")
 
             if time.time() >= deadline:
