@@ -1,6 +1,7 @@
 import json
 import tempfile
 import os
+import time
 import papermill as pm
 
 import requests
@@ -19,6 +20,8 @@ class NotebookOperator(PythonOperator):
             "get_tenant_binding": "https://apigw-beta.huawei.com/api/alpha/bizadmin/project/v1/tenant-binding/get",
             "get_dag_info": "https://apigw-beta.huawei.com/api/alpha/workspacecore/api/v1/internal/dag/get",
             "get_dag_run_info": "https://apigw-beta.huawei.com/api/alpha/workspacecore/api/v1/wfapi/dagrun/query",
+            "create_spark_job": "https://apigw-beta.huawei.com/api/alpha/compRoute/job/create",
+            "get_spark_job": "https://apigw-beta.huawei.com/api/alpha/compRoute/job/get",
         },
         "gamma": {
             "get_user_info": "https://apigw-beta.huawei.com/api/gamma/bizadmin/user/v1/search/batch/get",
@@ -26,6 +29,8 @@ class NotebookOperator(PythonOperator):
             "get_tenant_binding": "https://apigw-beta.huawei.com/api/gamma/bizadmin/project/v1/tenant-binding/get",
             "get_dag_info": "https://apigw-beta.huawei.com/api/gamma/workspacecore/api/v1/internal/dag/get",
             "get_dag_run_info": "https://apigw-beta.huawei.com/api/gamma/workspacecore/api/v1/wfapi/dagrun/query",
+            "create_spark_job": "https://apigw-beta.huawei.com/api/gamma/compRoute/job/create",
+            "get_spark_job": "https://apigw-beta.huawei.com/api/gamma/compRoute/job/get",
         },
         "prod": {
             "get_user_info": "https://apigw.huawei.com/api/bizadmin/user/v1/search/batch/get",
@@ -33,6 +38,8 @@ class NotebookOperator(PythonOperator):
             "get_tenant_binding": "https://apigw.huawei.com/api/bizadmin/project/v1/tenant-binding/get",
             "get_dag_info": "https://apigw.huawei.com/api/workspacecore/api/v1/internal/dag/get",
             "get_dag_run_info": "https://apigw.huawei.com/api/workspacecore/api/v1/wfapi/dagrun/query",
+            "create_spark_job": "https://apigw.huawei.com/api/compRoute/job/create",
+            "get_spark_job": "https://apigw.huawei.com/api/compRoute/job/get",
         },
     }
 
@@ -124,6 +131,179 @@ class NotebookOperator(PythonOperator):
             self.log.error(f"HTTP请求失败: {str(e)}", exc_info=True)
             raise
 
+    def get_resource_id(self, project_id: str, headers: dict = None) -> str:
+        resource_id = self.params.get("resource_id")
+        if not resource_id:
+            raise ValueError("resource_id is required before the resource lookup API is implemented")
+        return resource_id
+
+    def build_spark_job_params(self, file_name: str) -> dict:
+        return {
+            "numExecutors": self.params.get("num_executors", 1),
+            "executorCores": self.params.get("executor_cores", 1),
+            "driverMemory": self.format_memory(self.params.get("driver_memory", 512)),
+            "executorMemory": self.format_memory(self.params.get("executor_memory", 512)),
+            "mainClass": file_name,
+            "mainClassParameter": json.dumps(self.parameters, ensure_ascii=False),
+            "appJar": file_name,
+            "dbName": "default"
+        }
+
+    def build_spark_create_job_vo(self, file_name: str, project_id: str, headers: dict = None) -> dict:
+        tenant_binding = self.get_tenant_binding(project_id, headers=headers)
+        connection_id = self.extract_first_value(tenant_binding, "connectionId", "connection_id", "id")
+        connection = self.extract_first_value(tenant_binding, "connection", "connectionName", "name")
+        if not connection_id or not connection:
+            raise ValueError("connectionId and connection are required from get_tenant_binding")
+
+        return {
+            "jobName": self.task_id,
+            "jobParams": json.dumps(self.build_spark_job_params(file_name), ensure_ascii=False),
+            "jobBizId": self.task_id,
+            "projectId": project_id,
+            "engineProvider": "FCS",
+            "engineType": "SPARK",
+            "engineJobType": "SPARK_PY",
+            "resourceId": self.get_resource_id(project_id, headers=headers),
+            "connectionId": connection_id,
+            "connection": connection,
+            "jobSource": "NOTEBOOK",
+            "owner": self.user_info["global_user_id"]
+        }
+
+    def create_spark_job(self, file_path: str, file_name: str, project_id: str, headers: dict = None) -> str:
+        url = self.REMOTE_API_MAP[self.env]["create_spark_job"]
+        create_job_vo = self.build_spark_create_job_vo(file_name, project_id, headers=headers)
+        data = {"createJobVo": json.dumps(create_job_vo, ensure_ascii=False)}
+        try:
+            with open(file_path, "rb") as f:
+                files = {"jobFileList": (file_name, f)}
+                response = requests.post(url, files=files, data=data, headers=headers)
+            self.log.info(f"HTTP请求响应状态码: {response.status_code}")
+            self.log.info(f"HTTP请求响应内容: {response.text}")
+            job_id = self.extract_job_id(json.loads(response.content))
+            self.log.info(f"Spark作业提交成功，job_id: {job_id}")
+            return job_id
+        except Exception as e:
+            self.log.error(f"Spark作业提交失败: {str(e)}", exc_info=True)
+            raise
+
+    def get_spark_job(self, job_id: str, query_type: str, headers: dict = None, is_sync_job_from_provider: bool = False):
+        url = self.REMOTE_API_MAP[self.env]["get_spark_job"]
+        data = {
+            "jobId": job_id,
+            "queryType": query_type
+        }
+        if is_sync_job_from_provider:
+            data["isSyncJobFromProvider"] = True
+        response = self.send_http_get(url, data=data, headers=headers)
+        return json.loads(response.content)
+
+    def poll_spark_job(self, job_id: str, headers: dict = None) -> dict:
+        poll_interval = int(self.params.get("spark_job_poll_interval", 30))
+        timeout = int(self.params.get("spark_job_timeout", 3600))
+        deadline = time.time() + timeout
+        last_base_info = None
+        last_job_log = None
+
+        while True:
+            last_base_info = self.get_spark_job(
+                job_id,
+                "jobBaseInfo",
+                headers=headers,
+                is_sync_job_from_provider=True
+            )
+            last_job_log = self.get_spark_job(job_id, "jobLog", headers=headers)
+            self.log.info(f"Spark作业状态响应: {last_base_info}")
+            self.log.info(f"Spark作业日志响应: {last_job_log}")
+
+            job_status = self.extract_job_status(last_base_info)
+            if job_status:
+                normalized_status = str(job_status).lower()
+                if normalized_status in {"success", "succeeded", "finished", "completed"}:
+                    return {
+                        "job_id": job_id,
+                        "job_base_info": last_base_info,
+                        "job_log": last_job_log
+                    }
+                if normalized_status in {"failed", "error", "cancelled", "canceled", "killed", "timeout"}:
+                    raise RuntimeError(f"Spark作业执行失败，job_id: {job_id}, job_status: {job_status}")
+
+            if time.time() >= deadline:
+                raise TimeoutError(f"Spark作业轮询超时，job_id: {job_id}, timeout: {timeout}")
+            time.sleep(poll_interval)
+
+    def submit_spark_job(self, file_path: str, source_path: str, project_id: str, headers: dict = None) -> dict:
+        if not source_path.endswith(".py"):
+            raise ValueError("Spark作业提交仅支持 .py 文件")
+        file_name = os.path.basename(source_path)
+        job_id = self.create_spark_job(file_path, file_name, project_id, headers=headers)
+        return self.poll_spark_job(job_id, headers=headers)
+
+    def extract_job_id(self, data):
+        if isinstance(data, str):
+            return data
+        if isinstance(data, dict):
+            for key in ("data", "jobId", "job_id", "id"):
+                value = data.get(key)
+                if isinstance(value, str):
+                    return value
+                if value is not None:
+                    nested_job_id = self.extract_job_id(value)
+                    if nested_job_id:
+                        return nested_job_id
+        if isinstance(data, list):
+            for item in data:
+                nested_job_id = self.extract_job_id(item)
+                if nested_job_id:
+                    return nested_job_id
+        raise ValueError("无法从提交响应中获取jobId")
+
+    def extract_job_status(self, data):
+        if isinstance(data, dict):
+            for key in ("jobStatus", "job_status", "status"):
+                if key in data:
+                    return data[key]
+            for value in data.values():
+                nested_status = self.extract_job_status(value)
+                if nested_status:
+                    return nested_status
+        if isinstance(data, list):
+            for item in data:
+                nested_status = self.extract_job_status(item)
+                if nested_status:
+                    return nested_status
+        return None
+
+    def extract_first_value(self, data, *keys):
+        if isinstance(data, dict):
+            for key in keys:
+                if data.get(key):
+                    return data[key]
+            for value in data.values():
+                nested_value = self.extract_first_value(value, *keys)
+                if nested_value:
+                    return nested_value
+        if isinstance(data, list):
+            for item in data:
+                nested_value = self.extract_first_value(item, *keys)
+                if nested_value:
+                    return nested_value
+        return None
+
+    def format_memory(self, value) -> str:
+        if isinstance(value, int):
+            return f"{value}m"
+        if isinstance(value, str) and value.isdigit():
+            return f"{value}m"
+        return str(value)
+
+    def should_submit_spark_job(self) -> bool:
+        value = self.params.get("submit_spark_job", False)
+        if isinstance(value, str):
+            return value.lower() == "true"
+        return bool(value)
+
     def _execute(self, **context):
         __import__('subprocess').check_call([__import__('sys').executable, '-m', 'pip', 'uninstall', 'hw-aiportal-aipd_dag_operator', '-y'])
         __import__('subprocess').check_call([__import__('sys').executable, '-m', 'pip', 'install', 'hw-aiportal-aipd_dag_operator', '--index-url', 'https://cmc.centralrepo.rnd.huawei.com/pypi/simple', '--extra-index-url', 'https://cmc.centralrepo.rnd.huawei.com/artifactory/product_pypi/simple', '--trusted-host', 'cmc.centralrepo.rnd.huawei.com'])
@@ -179,7 +359,9 @@ class NotebookOperator(PythonOperator):
                 f.write(content)
             self.log.info(f"写入文件内容完成，长度：{len(content)}")
 
-            if path.endswith(".ipynb"):
+            if self.should_submit_spark_job():
+                return self.submit_spark_job(tmp_file_path, path, project_id, headers=headers)
+            elif path.endswith(".ipynb"):
                 # Papermill同步执行Spark Notebook
                 pm.execute_notebook(
                     input_path=tmp_file_path,
